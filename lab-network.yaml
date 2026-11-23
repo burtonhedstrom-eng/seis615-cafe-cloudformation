@@ -1,12 +1,112 @@
 AWSTemplateFormatVersion: 2010-09-09
+# CHANGED: description now reflects the highly available cafe-cfn network.
 Description: >-
-  Network Template: Sample template that creates a VPC with DNS and public IPs enabled.
+  Network Template: VPC with DNS enabled, two public and two private subnets
+  across two AZs, an internet gateway, and one NAT gateway per AZ.
+
+# CHANGE LOG
+# ---------------------------------------------------------------------------
+# CHANGED: Description updated to describe the two-AZ highly available network.
+# ADDED:   Parameters section with VpcCidr and four subnet CIDRs (steering defaults).
+# ADDED:   Metadata AWS::CloudFormation::Interface to group/label the console form.
+# CHANGED: VPC CidrBlock now references the VpcCidr parameter; added Name + Project tags.
+# ADDED:   Name + Project=cafe-cfn tags to InternetGateway and PublicRouteTable.
+# CHANGED: Single lab PublicSubnet renamed to PublicSubnet1 (AZ index 0) and
+#          parameterised; added Name + Project tags and MapPublicIpOnLaunch.
+# ADDED:   PublicSubnet2 (AZ index 1) so the ALB can span two AZs.
+# ADDED:   PrivateSubnet1 (AZ index 0) and PrivateSubnet2 (AZ index 1) for the
+#          app Auto Scaling group and RDS.
+# CHANGED: PublicSubnetRouteTableAssociation renamed to PublicSubnet1RouteTableAssociation.
+# ADDED:   PublicSubnet2RouteTableAssociation so both public subnets use the IGW route.
+# REMOVED: Per-subnet default-NACL associations (the VPC default NACL already
+#          applies to every subnet, so the explicit associations were redundant).
+# ADDED:   One Elastic IP + NAT gateway per public subnet (NatGateway1/2).
+# ADDED:   One private route table per AZ (PrivateRouteTable1/2) sending
+#          0.0.0.0/0 to the NAT gateway in the same AZ, plus their associations.
+# CHANGED: Public subnet output/export renamed; kept -SubnetID export pointing at
+#          PublicSubnet1 for backward compatibility.
+# ADDED:   Exports for PublicSubnet1ID, PublicSubnet2ID, PrivateSubnet1ID,
+#          PrivateSubnet2ID (consumed by the application stack).
+# ---------------------------------------------------------------------------
 
 # This template creates:
-#   VPC
+#   VPC (DNS support + hostnames)
 #   Internet Gateway
-#   Public Route Table
-#   Public Subnet
+#   Public Route Table (0.0.0.0/0 -> IGW) for both public subnets
+#   Two public subnets and two private subnets across two AZs
+#   One NAT gateway (with its own Elastic IP) in each public subnet
+#   One private route table per AZ (0.0.0.0/0 -> NAT gateway in same AZ)
+
+######################
+# Parameters section
+######################
+
+# ADDED: parameters so the VPC and subnet CIDRs are not hard-coded; defaults
+#        match the target architecture in the steering file.
+Parameters:
+
+  VpcCidr:
+    Type: String
+    Description: CIDR block for the VPC.
+    Default: 10.0.0.0/16
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    ConstraintDescription: Must be a valid IPv4 CIDR block (e.g. 10.0.0.0/16).
+
+  PublicSubnet1Cidr:
+    Type: String
+    Description: CIDR block for public subnet 1 (AZ index 0).
+    Default: 10.0.0.0/24
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    ConstraintDescription: Must be a valid IPv4 CIDR block.
+
+  PublicSubnet2Cidr:
+    Type: String
+    Description: CIDR block for public subnet 2 (AZ index 1).
+    Default: 10.0.1.0/24
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    ConstraintDescription: Must be a valid IPv4 CIDR block.
+
+  PrivateSubnet1Cidr:
+    Type: String
+    Description: CIDR block for private subnet 1 (AZ index 0).
+    Default: 10.0.2.0/23
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    ConstraintDescription: Must be a valid IPv4 CIDR block.
+
+  PrivateSubnet2Cidr:
+    Type: String
+    Description: CIDR block for private subnet 2 (AZ index 1).
+    Default: 10.0.4.0/23
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    ConstraintDescription: Must be a valid IPv4 CIDR block.
+
+######################
+# Metadata section
+######################
+
+# ADDED: console form grouping and labels for the parameters above.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network CIDR configuration
+        Parameters:
+          - VpcCidr
+          - PublicSubnet1Cidr
+          - PublicSubnet2Cidr
+          - PrivateSubnet1Cidr
+          - PrivateSubnet2Cidr
+    ParameterLabels:
+      VpcCidr:
+        default: VPC CIDR block
+      PublicSubnet1Cidr:
+        default: Public subnet 1 CIDR (AZ a)
+      PublicSubnet2Cidr:
+        default: Public subnet 2 CIDR (AZ b)
+      PrivateSubnet1Cidr:
+        default: Private subnet 1 CIDR (AZ a)
+      PrivateSubnet2Cidr:
+        default: Private subnet 2 CIDR (AZ b)
 
 ######################
 # Resources section
@@ -21,26 +121,46 @@ Resources:
     Properties:
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      CidrBlock: 10.0.0.0/16
-      
+      # CHANGED: CidrBlock now comes from the VpcCidr parameter instead of a literal.
+      CidrBlock: !Ref VpcCidr
+      # ADDED: Name + Project tags (required for every resource).
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-vpc
+        - Key: Project
+          Value: cafe-cfn
+
   ## Internet Gateway
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
-  
+    # ADDED: Name + Project tags.
+    Properties:
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-igw
+        - Key: Project
+          Value: cafe-cfn
+
   VPCGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
-  
+
   ## Public Route Table
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
-  
+      # ADDED: Name + Project tags.
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-public-rt
+        - Key: Project
+          Value: cafe-cfn
+
   PublicRoute:
     Type: AWS::EC2::Route
     DependsOn: VPCGatewayAttachment
@@ -48,42 +168,212 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
-  
-  ## Public Subnet
-  
-  PublicSubnet:
+
+  ## Public Subnets
+
+  # CHANGED: the lab's single PublicSubnet is now PublicSubnet1 (AZ index 0),
+  #          parameterised, tagged, and auto-assigns a public IPv4.
+  PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: 10.0.0.0/24
-      AvailabilityZone: !Select 
+      CidrBlock: !Ref PublicSubnet1Cidr
+      # ADDED: auto-assign public IPv4 for the bastion and NAT gateways.
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select
         - 0
-        - !GetAZs 
+        - !GetAZs
           Ref: AWS::Region
-  
-  PublicSubnetRouteTableAssociation:
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-public-1
+        - Key: Project
+          Value: cafe-cfn
+
+  # ADDED: second public subnet in AZ index 1 so the ALB spans two AZs.
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet2Cidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs
+          Ref: AWS::Region
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-public-2
+        - Key: Project
+          Value: cafe-cfn
+
+  # CHANGED: association renamed to match PublicSubnet1.
+  PublicSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
-  
-  PublicSubnetNetworkAclAssociation:
-    Type: AWS::EC2::SubnetNetworkAclAssociation
+
+  # ADDED: public subnet 2 also uses the public route table.
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet
-      NetworkAclId: !GetAtt 
-        - VPC
-        - DefaultNetworkAcl
-  
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # REMOVED: PublicSubnetNetworkAclAssociation — the VPC default network ACL
+  #          already applies to every subnet, so the explicit association was
+  #          redundant and only covered the single lab subnet.
+
+  ## Private Subnets
+
+  # ADDED: private subnet in AZ index 0 for the app ASG and RDS.
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs
+          Ref: AWS::Region
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-private-1
+        - Key: Project
+          Value: cafe-cfn
+
+  # ADDED: private subnet in AZ index 1 for the app ASG and RDS.
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs
+          Ref: AWS::Region
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-private-2
+        - Key: Project
+          Value: cafe-cfn
+
+  ## NAT Gateways (one per public subnet)
+
+  # ADDED: Elastic IP for NAT gateway in AZ index 0.
+  NatEip1:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-nat-eip-1
+        - Key: Project
+          Value: cafe-cfn
+
+  # ADDED: Elastic IP for NAT gateway in AZ index 1.
+  NatEip2:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-nat-eip-2
+        - Key: Project
+          Value: cafe-cfn
+
+  # ADDED: NAT gateway in public subnet 1 for private subnet 1 egress.
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip1.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-nat-1
+        - Key: Project
+          Value: cafe-cfn
+
+  # ADDED: NAT gateway in public subnet 2 for private subnet 2 egress.
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-nat-2
+        - Key: Project
+          Value: cafe-cfn
+
+  ## Private Route Tables (one per AZ)
+
+  # ADDED: private route table for AZ index 0.
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-private-rt-1
+        - Key: Project
+          Value: cafe-cfn
+
+  # ADDED: private subnet 1 egress to NAT gateway 1 (same AZ).
+  PrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  # ADDED: associate private subnet 1 with its route table.
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  # ADDED: private route table for AZ index 1.
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: cafe-cfn-private-rt-2
+        - Key: Project
+          Value: cafe-cfn
+
+  # ADDED: private subnet 2 egress to NAT gateway 2 (same AZ).
+  PrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  # ADDED: associate private subnet 2 with its route table.
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+
 ######################
 # Outputs section
 ######################
 
 Outputs:
-  
-  PublicSubnet:
-    Description: The subnet ID to use for public web servers
-    Value: !Ref PublicSubnet
+
+  # CHANGED: logical output renamed; kept the -SubnetID export name pointing at
+  #          PublicSubnet1 for backward compatibility with the lab.
+  PublicSubnet1:
+    Description: The subnet ID to use for public web servers (public subnet 1)
+    Value: !Ref PublicSubnet1
     Export:
       Name: !Sub '${AWS::StackName}-SubnetID'
 
@@ -92,3 +382,31 @@ Outputs:
     Value: !Ref VPC
     Export:
       Name: !Sub '${AWS::StackName}-VPCID'
+
+  # ADDED: explicit public subnet 1 export for the application stack.
+  PublicSubnet1ID:
+    Description: Public subnet 1 ID (AZ index 0)
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet1ID'
+
+  # ADDED: public subnet 2 export.
+  PublicSubnet2ID:
+    Description: Public subnet 2 ID (AZ index 1)
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet2ID'
+
+  # ADDED: private subnet 1 export.
+  PrivateSubnet1ID:
+    Description: Private subnet 1 ID (AZ index 0)
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet1ID'
+
+  # ADDED: private subnet 2 export.
+  PrivateSubnet2ID:
+    Description: Private subnet 2 ID (AZ index 1)
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet2ID'
