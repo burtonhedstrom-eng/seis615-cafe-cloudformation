@@ -46,6 +46,8 @@ Description: >-
 # ADDED:   Outputs BastionPublicIP, DBEndpoint, AutoScalingGroupName, TargetGroupArn.
 # CHANGED: cfn-init yum packages php/php-mysqlnd -> php8.1/php8.1-mysqlnd (the bare
 #          names do not exist on Amazon Linux 2023; first deploy failed cfn-init).
+# CHANGED: deploy script now unzips db.zip before loading create-db.sql (the repo
+#          ships the DB loader zipped; without this the DB load found no sql file).
 # ---------------------------------------------------------------------------
 
 # This template creates:
@@ -606,6 +608,12 @@ Resources:
 
                 echo "Unzipping cafe.zip into /var/www/html"
                 unzip -o cafe.zip -d /var/www/html
+
+                # CHANGED: unzip db.zip so db/sql/create-db.sql exists (the repo ships
+                #          the DB loader zipped; the first deploy's load step failed with
+                #          "create-db.sql: No such file or directory").
+                echo "Unzipping db.zip (DB loader + sql/create-db.sql)"
+                unzip -o db.zip -d /tmp/cafe-src
 
                 echo "Placing AWS PHP SDK in the cafe folder"
                 cp aws.zip aws.phar /var/www/html/cafe/
