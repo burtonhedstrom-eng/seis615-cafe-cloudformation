@@ -21,6 +21,8 @@ Description: >-
 # ADDED:   Security groups BastionSG (22 from MyIP), AlbSG (80 from 0.0.0.0/0),
 #          AppSG (80 from AlbSG, 22 from BastionSG), DBSG (3306 from AppSG only).
 # ADDED:   BastionHost (Amazon Linux 2023) in public subnet 1 for SSH checks.
+# CHANGED: BastionHost uses top-level SubnetId/SecurityGroupIds (not a NetworkInterfaces
+#          block) so !GetAtt BastionHost.PublicIp populates the BastionPublicIP output.
 # ADDED:   Seven /cafe/* Secrets Manager secrets; dbPassword generated (plain string,
 #          excluding / @ " ' \ and spaces); dbUrl holds the RDS endpoint.
 # ADDED:   DBSubnetGroup (both private subnets) + Multi-AZ MariaDB 10.6.25 RDS instance
@@ -42,6 +44,8 @@ Description: >-
 #          target-tracking policy on ASGAverageCPUUtilization.
 # CHANGED: Output URL now points at the load balancer DNS name instead of a single instance.
 # ADDED:   Outputs BastionPublicIP, DBEndpoint, AutoScalingGroupName, TargetGroupArn.
+# CHANGED: cfn-init yum packages php/php-mysqlnd -> php8.1/php8.1-mysqlnd (the bare
+#          names do not exist on Amazon Linux 2023; first deploy failed cfn-init).
 # ---------------------------------------------------------------------------
 
 # This template creates:
@@ -348,20 +352,19 @@ Resources:
   ## Bastion host
 
   # ADDED: bastion host in public subnet 1, used only for SSH checks.
+  # CHANGED: use top-level SubnetId/SecurityGroupIds instead of a NetworkInterfaces
+  #          block so that !GetAtt BastionHost.PublicIp populates the BastionPublicIP
+  #          output reliably (public subnet 1 auto-assigns a public IPv4).
   BastionHost:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref LatestAmiId
       KeyName: !Ref KeyName
-      NetworkInterfaces:
-        - DeviceIndex: 0
-          AssociatePublicIpAddress: true
-          DeleteOnTermination: true
-          GroupSet:
-            - !Ref BastionSG
-          SubnetId:
-            Fn::ImportValue: !Sub ${NetworkStackName}-PublicSubnet1ID
+      SubnetId:
+        Fn::ImportValue: !Sub ${NetworkStackName}-PublicSubnet1ID
+      SecurityGroupIds:
+        - !Ref BastionSG
       Tags:
         - Key: Name
           Value: cafe-cfn-bastion
@@ -557,8 +560,12 @@ Resources:
           packages:
             yum:
               httpd: []
-              php: []
-              php-mysqlnd: []
+              # CHANGED: Amazon Linux 2023 has no bare "php"/"php-mysqlnd" packages
+              #          (cfn-init failed: "Yum does not have php-mysqlnd available");
+              #          AL2023 ships PHP as versioned packages, so use php8.1 and
+              #          php8.1-mysqlnd (provides mysqlnd/pdo_mysql, php.ini at /etc/php.ini).
+              php8.1: []
+              php8.1-mysqlnd: []
               mariadb105: []
               git: []
           services:
